@@ -30,17 +30,24 @@ export class LandScraper extends HumanScraper {
         await randomDelay(50, 100);
     }
 
-    async applyFilters() {
-        console.log('Applying filters quickly...');
+    async applyFilters(merchav: string, dateStr: string) {
+        console.log(`Applying filters... Merchav: "${merchav}", Date: "${dateStr}"`);
 
-        // 1. District: Jerusalem
-        console.log('Setting District: Jerusalem');
+        // 1. District
+        console.log(`Setting District: ${merchav}`);
         await this.click('#Merchav_id .p-multiselect-label-container');
-        await this.click('li.p-multiselect-item:has-text("ירושלים")');
+        // Handle "Select All" or "My Location"? No, just specific text match
+        // Note: The text might be partial match so strict check is better if list is known
+        const merchavSelector = `li.p-multiselect-item:has-text("${merchav}")`;
+        if (await this.page?.isVisible(merchavSelector)) {
+            await this.click(merchavSelector);
+        } else {
+            console.warn(`Merchav option "${merchav}" not found in dropdown!`);
+        }
         await this.page?.keyboard.press('Escape');
         await randomDelay(50, 100);
 
-        // 2. Purpose: Low rise AND Saturated
+        // 2. Purpose: Low rise AND Saturated (Fixed)
         console.log('Setting Purpose: Low rise & Saturated');
         await this.click('#YeudMichraz_id .p-multiselect-label-container');
         await this.click('li.p-multiselect-item:has-text("בנייה נמוכה/צמודת קרקע")');
@@ -48,16 +55,16 @@ export class LandScraper extends HumanScraper {
         await this.page?.keyboard.press('Escape');
         await randomDelay(50, 100);
 
-        // 3. Status: Discussed in Committee
+        // 3. Status: Discussed in Committee (Fixed)
         console.log('Setting Status: Committee Discussed');
         await this.click('#StatusMichraz_id .p-multiselect-label-container');
         await this.click('li:has-text("נדון בוועדת מכרזים")');
         await this.page?.keyboard.press('Escape');
         await randomDelay(100, 100);
 
-        // 4. Date (Committee Date): 01/07/2025
-        console.log('Setting Date: 01/07/2025 via UI Picker (Carousel)');
-        await this.selectDateFromPickerUI('01/07/2025');
+        // 4. Date (Committee Date)
+        console.log(`Setting Date: ${dateStr} via UI Picker (Carousel)`);
+        await this.selectDateFromPickerUI(dateStr);
         await this.page?.keyboard.press('Tab');
     }
 

@@ -1,49 +1,65 @@
 import { LandScraper } from './landScraper';
 
 (async () => {
+    // Dynamic import for ESM module in CJS project environment
+    const { default: inquirer } = await import('inquirer');
+
     const scraper = new LandScraper();
 
     try {
-        let attempts = 0;
-        let success = false;
+        console.log('--- Land.gov.il Interactive Scraper ---');
 
-        while (attempts < 2 && !success) {
-            attempts++;
-            console.log(`\n--- Attempt ${attempts} ---`);
-
-            if (attempts > 1) {
-                await scraper.restartBrowser();
-            }
-
-            try {
-                await scraper.navigateHome();
-                await scraper.selectActiveTenders();
-                await scraper.openAdvancedSearch();
-
-                await scraper.applyFilters();
-                await scraper.performSearch();
-                const results = await scraper.extractResults();
-
-                if (results && results.length > 0) {
-                    console.log('Results:', JSON.stringify(results, null, 2));
-                    success = true;
-                } else {
-                    console.log('No results found. Retrying...');
+        const answers = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'merchav',
+                message: 'Select Merchav (District):',
+                choices: [
+                    'ירושלים',
+                    'תל אביב',
+                    'חיפה',
+                    'מרכז',
+                    'צפון',
+                    'דרום',
+                    'יו"ש',
+                    'מכרז ארצי'
+                ]
+            },
+            {
+                type: 'input',
+                name: 'date',
+                message: 'Enter Committee Date (DD/MM/YYYY):',
+                default: '01/07/2025',
+                validate: (input: string) => {
+                    if (!/^\d{2}\/\d{2}\/\d{4}$/.test(input)) return 'Format must be DD/MM/YYYY';
+                    return true;
                 }
-            } catch (innerError) {
-                console.error(`Attempt ${attempts} failed:`, innerError);
             }
+        ]);
+
+        console.log(`\n🚀 Starting scraper for: ${answers.merchav} on ${answers.date}...\n`);
+
+        await scraper.navigateHome();
+        await scraper.selectActiveTenders();
+        await scraper.openAdvancedSearch();
+
+        // Use user inputs
+        await scraper.applyFilters(answers.merchav, answers.date);
+
+        await scraper.performSearch();
+
+        console.log('Attempting to extract results (Note: logic still looks for 474/2024 specifically)...');
+        const results = await scraper.extractResults();
+
+        if (results.length > 0) {
+            console.log('✅ Results Found:', JSON.stringify(results, null, 2));
+        } else {
+            console.log('❌ No results found for tender 474/2024 with these filters.');
         }
 
-        if (!success) {
-            console.error('Failed to scrape results after multiple attempts.');
-        }
-
-        console.log('Navigation test complete. Keeping browser open for inspection.');
-        // Keep open for manual checking
-        await new Promise(() => { });
     } catch (error) {
-        console.error('Fatal Error:', error);
-        await scraper.close();
+        console.error('Test failed:', error);
+    } finally {
+        console.log('\nDone. Keeping browser open for inspection.');
     }
 })();
