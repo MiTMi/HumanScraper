@@ -172,90 +172,166 @@ export class LandScraper extends HumanScraper {
                 console.log(`Scroll attempt ${i + 1}/5...`);
                 await this.page?.evaluate(() => window.scrollBy(0, 1000));
                 await randomDelay(800, 1500);
-
-                // Check if text exists
-                const textVisible = await this.page?.evaluate(() => document.body.innerText.includes('474/2024'));
-                if (textVisible) {
-                    console.log('Found "474/2024" in page text!');
-                    break;
-                }
             }
 
-            // Find specific element
-            console.log('Locating target tender element...');
-            const cardHandle = await this.page?.evaluateHandle(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                // Find smallest element containing text
-                const el = elements.find(e => e.children.length === 0 && (e as HTMLElement).innerText && (e as HTMLElement).innerText.includes('474/2024'));
-                if (!el) return null;
-
-                // Traverse up to find clickable container (Michraz Card)
-                let parent = el.parentElement;
-                while (parent && parent !== document.body) {
-                    if (parent.tagName.includes('APP-MICHRAZ') || parent.className.includes('card')) return parent;
-                    parent = parent.parentElement;
+            // 1. Scan page text to find all Tender IDs
+            const tenderIds = await this.page?.evaluate(() => {
+                const text = document.body.innerText;
+                const matches = text.matchAll(/(\d+\/\d+)\s+מכרז/g);
+                const ids = new Set<string>();
+                for (const match of matches) {
+                    if (match[1]) ids.add(match[1]);
                 }
-                return el; // Fallback to text element
+                if (ids.size === 0) {
+                    const fallback = text.matchAll(/(\d+\/\d+)\s+מחיר מטרה/g);
+                    for (const match of fallback) { if (match[1]) ids.add(match[1]); }
+                }
+                return Array.from(ids);
             });
 
-            if (cardHandle) {
-                const element = cardHandle.asElement();
-                if (element) {
-                    console.log('Found card. Clicking to expand details...');
-                    await element.evaluate(el => {
-                        const link = el.querySelector('.michraz-link, .title, a, h2');
-                        if (link) (link as HTMLElement).click();
-                        else (el as HTMLElement).click();
-                    });
+            console.log(`Found ${tenderIds?.length || 0} tender IDs:`, tenderIds);
 
-                    await randomDelay(4000, 6000);
+            if (!tenderIds || tenderIds.length === 0) {
+                console.log('No tender IDs found.');
+                // Logging page text for debug
+                const text = await this.page?.evaluate(() => document.body.innerText.substring(0, 2000));
+                console.log('--- Page Text Dump ---');
+                console.log(text);
+                return [];
+            }
 
-                    // Parse Data from Text (Lots)
-                    const pageText = (await this.page?.evaluate(() => document.body.innerText)) || '';
-                    if (!pageText) { return []; }
+            const allResults: any[] = [];
+            // Limit to first 5
+            const limit = 5;
+            const idsToProcess = tenderIds.slice(0, limit);
 
-                    const lots = [];
-                    const parts = pageText.split('מספר מתחם:');
+            // 2. Sequential Processing
+            for (const id of idsToProcess) {
+                console.log(`Processing Tender ${id}...`);
 
-                    // Skip parts[0]
+                // Locate & Click (Expand)
+                const clicked = await this.page?.evaluate((tid) => {
+                    const els = Array.from(document.querySelectorAll('*'));
+                    // Find element starting with ID (title header)
+                    const el = els.find(e => e.children.length === 0 && (e as HTMLElement).innerText?.trim().startsWith(tid));
+                    if (el) {
+                        // Try to click a clickable parent or the element itself
+                        let clickable = el;
+                        // Traverse up to button or link?
+                        // Or looks for .michraz-link sibling?
+                        // Usually clicking the text works if it's in the header.
+                        (clickable as HTMLElement).click();
+                        return true;
+                    }
+                    return false;
+                }, id);
+
+                if (!clicked) {
+                    console.log(`Could not locate/click element for ${id}`);
+                    continue;
+                }
+
+                await randomDelay(2000, 3000); // Wait for expansion
+
+                // 3. Extract Data for THIS Tender
+                const fullText = (await this.page?.evaluate(() => document.body.innerText)) || '';
+
+                // Find the block for this ID
+                const startIdx = fullText.indexOf(id);
+                if (startIdx === -1) {
+                    console.log(`Text for ${id} not found in body?`);
+                    continue;
+                }
+
+                // We grab a chunk after the ID.
+                // If sequential, maybe identifying the END is hard.
+                // We'll take 3000 chars.
+                const chunk = fullText.substring(startIdx, startIdx + 3000);
+
+                // Check if it's Multi-Lot ("מספר מתחם:")
+                const parts = chunk.split('מספר מתחם:');
+
+                if (parts.length > 1) {
+                    // Parse Lots
                     for (let i = 1; i < parts.length; i++) {
-                        const chunk = parts[i];
+                        // Safety: stop if we hit another Tender ID in this part
+                        let sub = parts[i];
+                        // Simple check: does it look like start of new tender? e.g. "Result 3..."
+                        // Actually, just rely on regex not matching if structure is lost.
+
                         const getVal = (label: string) => {
-                            // Match label, optional colon, capture rest of line (or up to next newline)
                             const regex = new RegExp(`${label}\\s*[:]?\\s*([\\d,.]+|[^\\n]+)`);
-                            const match = chunk.match(regex);
+                            const match = sub.match(regex);
                             return match ? match[1].trim() : null;
                         };
 
-                        const lotNum = chunk.match(/^[\s\n]*(\d+)/)?.[1] || '';
-
-                        // Extract specific fields
+                        const lotNum = sub.match(/^[\s\n]*(\d+)/)?.[1] || '';
                         const expenses = getVal('הוצאות פיתוח ב₪');
                         const price = getVal('מחיר סופי ב₪');
                         const winner = getVal('שם זוכה');
 
-                        lots.push({
-                            tenderNumber: '474/2024',
-                            lotNumber: lotNum,
+                        // Only add if we found something useful (or if lotNum exists)
+                        if (lotNum || expenses || price) {
+                            allResults.push({
+                                tenderNumber: id,
+                                lotNumber: lotNum,
+                                developmentExpenses: expenses || 'Not found',
+                                winningOffer: price || 'Not found',
+                                winnerName: winner || 'Not found'
+                            });
+                        }
+                    }
+                } else {
+                    // Single Lot? Or Data Missing?
+                    const getVal = (label: string) => {
+                        const regex = new RegExp(`${label}\\s*[:]?\\s*([\\d,.]+|[^\\n]+)`);
+                        const match = chunk.match(regex);
+                        return match ? match[1].trim() : null;
+                    };
+                    const expenses = getVal('הוצאות פיתוח ב₪');
+                    const price = getVal('מחיר סופי ב₪');
+                    const winner = getVal('שם זוכה');
+
+                    if (expenses || price || winner) {
+                        allResults.push({
+                            tenderNumber: id,
+                            lotNumber: 'Single/Global',
                             developmentExpenses: expenses || 'Not found',
                             winningOffer: price || 'Not found',
                             winnerName: winner || 'Not found'
                         });
+                    } else {
+                        // If we found nothing, maybe it's just a status listing with no winners yet
+                        // But we should record we saw it.
+                        allResults.push({
+                            tenderNumber: id,
+                            lotNumber: '-',
+                            developmentExpenses: 'Not published',
+                            winningOffer: 'Not published',
+                            winnerName: 'Not published'
+                        });
                     }
-
-                    console.log('--- EXTRACTION RESULTS ---');
-                    console.log(JSON.stringify(lots, null, 2));
-
-                    if (lots.length === 0) {
-                        console.log('Parsed 0 lots. Dumping snippet for debug:');
-                        console.log(pageText.substring(0, 2000));
-                    }
-
-                    return lots;
                 }
-            } else {
-                console.log('Element 474/2024 not found in DOM.');
+
+                // Go Back to Results List
+                console.log('Returning to results list...');
+                await this.page?.goBack();
+                await randomDelay(2000, 3000); // Wait for list to reload
+
+                // Wait for the next item to be visible?
+                // Or just wait for "Results Found" text?
+                try {
+                    await this.page?.waitForSelector('.p-scroller, app-michraz-card, .results-title', { timeout: 10000 });
+                } catch (e) {
+                    console.log('Warning: Timeout waiting for results list after back navigation.');
+                }
+
+                // Optional: Close it back to reduce clutter? 
+                // await this.clickTender(id); 
             }
+
+            return allResults;
+
         } catch (e) {
             console.error('Extraction error:', e);
         }
